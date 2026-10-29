@@ -1,0 +1,121 @@
+//@version=6
+indicator("Nthane 13 Strategy", shorttitle="Nthane 13", overlay=true, max_lines_count=100, max_labels_count=100)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Nthane 13 Strategy
+// H4 swing levels + 13:00 South Africa time marker + rejection signals.
+// Educational indicator: signals are not guarantees and should be backtested.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Inputs
+groupLevels = "1. H4 Support & Resistance"
+pivotStrength = input.int(3, "H4 swing strength", minval=1, maxval=10, group=groupLevels)
+showLevels = input.bool(true, "Show H4 support/resistance", group=groupLevels)
+showMoreLevels = input.bool(false, "Show older H4 swing levels", group=groupLevels)
+
+groupTime = "2. Time Marker"
+showTimeMarker = input.bool(true, "Show 13:00 SAST vertical line", group=groupTime)
+sastSession = input.session("1300-1301:1234567", "Marker time (South Africa)", group=groupTime)
+sastTimezone = input.string("Africa/Johannesburg", "Time zone", options=["Africa/Johannesburg"], group=groupTime)
+
+groupSignal = "3. Rejection Signals"
+showSignals = input.bool(true, "Show rejection arrows", group=groupSignal)
+zoneTolerance = input.float(180.0, "Maximum distance from H4 level (price units)", minval=0.0, step=10.0, group=groupSignal)
+wickBodyRatio = input.float(1.0, "Minimum rejection wick / candle body", minval=0.1, step=0.1, group=groupSignal)
+confirmOnClose = input.bool(true, "Confirm signals after candle closes", group=groupSignal)
+
+groupRR = "4. Risk/Reward Guide"
+showRR = input.bool(false, "Show illustrative 1:2 and 1:3 levels on latest signal", group=groupRR)
+slBuffer = input.float(100.0, "Stop buffer beyond signal candle (price units)", minval=0.0, step=10.0, group=groupRR)
+
+// Get confirmed H4 swing levels. These are based on completed H4 pivot patterns.
+h4Resistance = request.security(syminfo.tickerid, "240",
+     ta.valuewhen(not na(ta.pivothigh(high, pivotStrength, pivotStrength)),
+     ta.pivothigh(high, pivotStrength, pivotStrength), 0),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+h4Support = request.security(syminfo.tickerid, "240",
+     ta.valuewhen(not na(ta.pivotlow(low, pivotStrength, pivotStrength)),
+     ta.pivotlow(low, pivotStrength, pivotStrength), 0),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+olderResistance = request.security(syminfo.tickerid, "240",
+     ta.valuewhen(not na(ta.pivothigh(high, pivotStrength, pivotStrength)),
+     ta.pivothigh(high, pivotStrength, pivotStrength), 1),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+olderSupport = request.security(syminfo.tickerid, "240",
+     ta.valuewhen(not na(ta.pivotlow(low, pivotStrength, pivotStrength)),
+     ta.pivotlow(low, pivotStrength, pivotStrength), 1),
+     gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// Draw H4 levels on any chart timeframe.
+plot(showLevels ? h4Resistance : na, "H4 Resistance", color=color.purple, linewidth=2, style=plot.style_stepline)
+plot(showLevels ? h4Support : na, "H4 Support", color=color.green, linewidth=2, style=plot.style_stepline)
+plot(showLevels and showMoreLevels ? olderResistance : na, "Older H4 Resistance", color=color.new(color.purple, 55), linewidth=1, style=plot.style_stepline)
+plot(showLevels and showMoreLevels ? olderSupport : na, "Older H4 Support", color=color.new(color.green, 55), linewidth=1, style=plot.style_stepline)
+
+// Mark the 13:00-13:01 SAST session on intraday charts.
+inSastMarker = not na(time(timeframe.period, sastSession, sastTimezone))
+newSastMarker = inSastMarker and not inSastMarker[1]
+if showTimeMarker and newSastMarker
+    line.new(bar_index, low, bar_index, high, xloc=xloc.bar_index, extend=extend.both,
+         color=color.orange, style=line.style_dashed, width=1)
+    label.new(bar_index, high, "13:00 SAST", style=label.style_label_down,
+         color=color.orange, textcolor=color.white, size=size.tiny)
+
+// Candle rejection logic. Signals use the current chart timeframe and nearest latest H4 pivot levels.
+body = math.max(math.abs(close - open), syminfo.mintick)
+upperWick = high - math.max(open, close)
+lowerWick = math.min(open, close) - low
+
+nearResistance = not na(h4Resistance) and math.abs(high - h4Resistance) <= zoneTolerance
+nearSupport = not na(h4Support) and math.abs(low - h4Support) <= zoneTolerance
+
+bearishRejectionRaw = nearResistance and close < open and upperWick >= body * wickBodyRatio
+bullishRejectionRaw = nearSupport and close > open and lowerWick >= body * wickBodyRatio
+
+bearishRejection = showSignals and (confirmOnClose ? barstate.isconfirmed : true) and bearishRejectionRaw
+bullishRejection = showSignals and (confirmOnClose ? barstate.isconfirmed : true) and bullishRejectionRaw
+
+plotshape(bearishRejection, title="Bearish H4 rejection", style=shape.arrowdown, location=location.abovebar,
+     color=color.red, size=size.small, text="SELL")
+plotshape(bullishRejection, title="Bullish H4 rejection", style=shape.arrowup, location=location.belowbar,
+     color=color.lime, size=size.small, text="BUY")
+
+// Optional guide lines from the latest confirmed signal. These are illustrative, not automatic orders.
+var line rrStopLine = na
+var line rrTwoLine = na
+var line rrThreeLine = na
+var label rrLabel = na
+
+if showRR and (bullishRejection or bearishRejection)
+    if not na(rrStopLine)
+        line.delete(rrStopLine)
+    if not na(rrTwoLine)
+        line.delete(rrTwoLine)
+    if not na(rrThreeLine)
+        line.delete(rrThreeLine)
+    if not na(rrLabel)
+        label.delete(rrLabel)
+
+    entryPrice = close
+    isShort = bearishRejection
+    stopPrice = isShort ? high + slBuffer : low - slBuffer
+    riskPoints = math.abs(stopPrice - entryPrice)
+    target2 = isShort ? entryPrice - 2.0 * riskPoints : entryPrice + 2.0 * riskPoints
+    target3 = isShort ? entryPrice - 3.0 * riskPoints : entryPrice + 3.0 * riskPoints
+
+    rrStopLine := line.new(bar_index, stopPrice, bar_index + 20, stopPrice, color=color.red, style=line.style_dashed, width=1)
+    rrTwoLine := line.new(bar_index, target2, bar_index + 20, target2, color=color.lime, style=line.style_dashed, width=1)
+    rrThreeLine := line.new(bar_index, target3, bar_index + 20, target3, color=color.green, style=line.style_dotted, width=1)
+    rrLabel := label.new(bar_index, entryPrice, isShort ? "SELL guide\nSL / 2R / 3R" : "BUY guide\nSL / 2R / 3R",
+         style=label.style_label_left, color=isShort ? color.red : color.green, textcolor=color.white, size=size.small)
+
+// Alert conditions for TradingView alerts.
+alertcondition(bullishRejection, title="Nthane 13 BUY rejection", message="Nthane 13: bullish rejection near H4 support on {{ticker}} ({{interval}}). Confirm your plan before trading.")
+alertcondition(bearishRejection, title="Nthane 13 SELL rejection", message="Nthane 13: bearish rejection near H4 resistance on {{ticker}} ({{interval}}). Confirm your plan before trading.")
+alertcondition(newSastMarker and showTimeMarker, title="Nthane 13 - 13:00 SAST", message="Nthane 13: 13:00 South Africa time marker on {{ticker}}.")
+
+// Reminder in the Data Window.
+plot(zoneTolerance, "Rejection zone tolerance (price units)", display=display.data_window)
